@@ -102,36 +102,59 @@ void kill_motors(void) {
 // Move n squares forward.
 void move_forward(int8_t n) {
     uint8_t i;
+    //uint8_t dir;
+    uint16_t output;
+    float error_prev = 0.0;
+    float error_current = 0;
+    float integral;
+    float derivative;
+    float Kp = 300;
+    float Ki = 150;
+    float Kd = 150;
+
     motor_set_direction('r', 'f');
     motor_set_direction('l', 'f');
     for (i = 0; i < n; i++) {
         right_turns = 0;
         left_turns = 0;
+
         while ((right_turns < 800 || left_turns < 800) && (PINC & _BV(PINC5))) {
-            uint8_t dir = norm(LEFT) > norm(RIGHT) ? LEFT : RIGHT;
-            float error = 0.5 - norm(dir);
-            float k_p = 800;
-            if (error > 0) {
-                OCR1A = (int16_t) k_p * error;
+            //dir = norm(LEFT) > norm(RIGHT) ? LEFT : RIGHT;
+            error_current = sensor[RIGHT]-(float)600;
+            integral = integral + error_current;
+            derivative =  (error_current-error_prev);
+            output = (int16_t)((Kp*error_current) + (Ki*integral) + (Kd*derivative));
+            if (output>1023){
+                output=1023;
+            }else if (output<0)
+            {
+                output=0;
+            }
+
+            if (error_current > 0) {
+                OCR1A = output;
                 OCR1B = 1023 - OCR1A;
                 PORTC |= _BV(PORTC3);
             } else {
-                error = -error;
-                OCR1B = (int16_t) k_p * error;
+                OCR1B = output;
                 OCR1A = 1023 - OCR1B;
                 PORTC &= ~_BV(PORTC3);
             }
 
-            error = right_turns - left_turns;
-            k_p = 0.5;
-            if (error > 0) {
-                OCR1B -= k_p * error;
-                OCR1A += k_p * error;
-            } else {
-                error = -error;
-                OCR1A -= k_p * error;
-                OCR1B += k_p * error;
-            }
+            error_prev = error_current;
+
+            // error = right_turns - left_turns;
+            // k_p = 0.5;
+            // if (error > 10) {
+            //     OCR1B -= k_p * error;
+            //     OCR1A += k_p * error;
+            // } else {
+            //     error = -error;
+            //     OCR1A -= k_p * error;
+            //     OCR1B += k_p * error;
+            // }
+
+
         }
     }
     kill_motors();
@@ -189,14 +212,14 @@ int main(void) {
     //Enable all interrupts
     sei();
 
-    DDRC &= ~(_BV(DDC5));
-    while (!(has_wall(RIGHT) && has_wall(RIGHT))) {
-        move_forward(1);
-    }
-    turn_right(1);
-    move_forward(1);
+    //uint8_t buff = 0;
 
-    while (1) {
+    DDRC &= ~(_BV(DDC5));
+    while ((PINC & _BV(PINC5)));
+    while (!(PINC & _BV(PINC5)));
+    while ((PINC & _BV(PINC5))) {
+        move_forward(1);
+
         if (has_wall(RIGHT)) {
             PORTC |= _BV(PORTC3);
         } else {
@@ -207,12 +230,5 @@ int main(void) {
         } else {
             PORTC &= ~(_BV(PORTC2));
         }
-        /*
-        while ((PINC & _BV(PINC5)));
-        move_forward(1);
-        move_forward(1);
-        turn_right(1);
-        move_forward(1);
-        */
     }
 }

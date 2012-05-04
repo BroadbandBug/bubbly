@@ -30,8 +30,7 @@ void motor_init (void) {
 
 	ADCSRA = _BV(ADEN)  // ADC enable
            | _BV(ADIE)  // Interrupt enable
-           | _BV(ADATE) // Enable Auto-triggering, free-runs by default
-
+           | _BV(ADATE) // Enable Auto-triggering, free-runs by default 
            | _BV(ADPS2) // 128 prescaler
            | _BV(ADPS1)
            | _BV(ADPS0)
