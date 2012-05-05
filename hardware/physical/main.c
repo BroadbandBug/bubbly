@@ -4,16 +4,18 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
+#include <math.h>
 
 // from hardware.h (should be incorporated soon)
 typedef enum {
     FRONT = 0,
     LEFT = 1,
-    RIGHT = 2
+    RIGHT = 2,
+    NONE = -1,
 } side_t;
 
 // Pin Change ISR
-ISR(PCINT2_vect){
+ISR(PCINT2_vect) {
     // Check to see which pin has changed by comparing the value actually on
     // the pin to the one stored in the respective variable. If there is
     // a change, update current
@@ -53,43 +55,6 @@ ISR(PCINT2_vect){
 
 volatile uint16_t sensor[3] = {0};
 volatile uint16_t sensor_max[3] = {0};
-
-// ADC ISR
-ISR (ADC_vect) {
-    static bool first = true;
-    if (first) {
-        first = false;
-    } else {
-        if ((((ADMUX & 0x0F) == 0) || ((ADMUX & 0xF) == 1)) &&
-            (ADC > CURRENT_THRESHOLD)) {
-            // should signal motor failure
-            motor_set_speed( 'r', 0);
-            motor_set_speed( 'l', 0);
-        } else if ((ADMUX & 0x0F) == 4) {
-            sensor[FRONT] = ADC;
-            if (sensor[FRONT] > sensor_max[FRONT])
-                sensor_max[FRONT] = sensor[FRONT];
-        } else if ((ADMUX & 0x0F) == 7) {
-            sensor[RIGHT] = ADC;
-            if (sensor[RIGHT] > sensor_max[RIGHT])
-                sensor_max[RIGHT] = sensor[RIGHT];
-        } else if ((ADMUX & 0x0F) == 6) {
-            sensor[LEFT] = ADC;
-            if (sensor[LEFT] > sensor_max[LEFT])
-                sensor_max[LEFT] = sensor[LEFT];
-        } else {
-            // should signal failure
-        }
-
-        uint8_t X = 0;
-        uint8_t next_sensor[] = {1, 4, X, X, 6, X, 7, 0};
-        ADMUX = (ADMUX & 0xF0) | next_sensor[ADMUX & 0x0F];
-        first = true;
-    }
-
-	ADCSRA |= _BV(ADSC);
-}
-
 inline float norm(side_t dir) {
     return (float) sensor[dir] / (float) sensor_max[dir];
 }
@@ -99,61 +64,97 @@ void kill_motors(void) {
     motor_set_speed('l', 0);
 }
 
+// Returns true if there is currently a wall in the specified direction with
+// respect to the robot.
+inline bool has_wall(side_t side) {
+    return (norm(side) >= 0.4);
+}
+
+bool new_wall(side_t* current_wall) {
+    //check for a new wall and assign
+    if (!has_wall(*current_wall) || *current_wall == NONE) {
+        if (*current_wall == NONE) {
+            if (has_wall(RIGHT)) {
+                *current_wall = RIGHT;
+                return true;
+            } else if (has_wall(LEFT)) {
+                *current_wall = LEFT;
+                return true;
+            }
+        } else if ((*current_wall == RIGHT) && (!has_wall(RIGHT)) &&
+                    has_wall(LEFT)) {
+            *current_wall = LEFT;
+                return true;
+        } else if ((*current_wall == LEFT) && !has_wall(LEFT) &&
+                    has_wall(RIGHT)) {
+            *current_wall = RIGHT;
+                return true;
+        } else if (!has_wall(LEFT) && !has_wall(RIGHT)) {
+            //No wall on either side
+            *current_wall = NONE;
+                return true;
+        }
+    }
+    return false;
+}
+
+inline void motor_speed(uint16_t left, uint16_t right) {
+    OCR1B = left;
+    OCR1A = right;
+}
+
+inline bool front_clear(void) {
+    return PINC & _BV(PINC5);
+}
+
 // Move n squares forward.
 void move_forward(int8_t n) {
-    uint8_t i;
-    //uint8_t dir;
-    uint16_t output;
     float error_prev = 0.0;
-    float error_current = 0;
-    float integral;
-    float derivative;
-    float Kp = 300;
-    float Ki = 150;
-    float Kd = 150;
-
+    float error = 0;
+    float integral = 0;
+    float derivative = 0;
+    side_t current_wall;
     motor_set_direction('r', 'f');
     motor_set_direction('l', 'f');
-    for (i = 0; i < n; i++) {
+
+    for (int8_t i = 0; i < n; i++) {
         right_turns = 0;
         left_turns = 0;
-
-        while ((right_turns < 800 || left_turns < 800) && (PINC & _BV(PINC5))) {
-            //dir = norm(LEFT) > norm(RIGHT) ? LEFT : RIGHT;
-            error_current = sensor[RIGHT]-(float)600;
-            integral = integral + error_current;
-            derivative =  (error_current-error_prev);
-            output = (int16_t)((Kp*error_current) + (Ki*integral) + (Kd*derivative));
-            if (output>1023){
-                output=1023;
-            }else if (output<0)
-            {
-                output=0;
+        while ((right_turns < 800 || left_turns < 800) && front_clear()) {
+            if (new_wall(&current_wall)) {
+                integral = 0;
+                derivative = 0;
+                error_prev = 0;
             }
 
-            if (error_current > 0) {
-                OCR1A = output;
-                OCR1B = 1023 - OCR1A;
-                PORTC |= _BV(PORTC3);
+            //          unused, LEFT, RIGHT
+            float thresh[] = {0, 348, 307};
+            float Kp[] = {0, 5, 5};
+            float Ki[] = {0, 0, 0};
+            float Kd[] = {0, 0, 0};
+            //Reset all PID variables
+            //If there is a wall to the right or the left use analog PID
+            if (current_wall != NONE) {
+                side_t cw = current_wall;
+
+                error = sensor[cw] - thresh[cw];
+                integral += error;
+                derivative = error - error_prev;
+
+                int16_t output = Kp[cw] * error + Ki[cw] * integral +
+                                 Kd[cw] * derivative;
+
+                if (current_wall == LEFT) {
+                    ///slow down left motor
+                    motor_speed(512 + output, 512 - output);
+                } else {
+                    //slow down right motor
+                    motor_speed(512 - output, 512 + output);
+                }
             } else {
-                OCR1B = output;
-                OCR1A = 1023 - OCR1B;
-                PORTC &= ~_BV(PORTC3);
+                /* do something with encoders */
+                kill_motors();
             }
-
-            error_prev = error_current;
-
-            // error = right_turns - left_turns;
-            // k_p = 0.5;
-            // if (error > 10) {
-            //     OCR1B -= k_p * error;
-            //     OCR1A += k_p * error;
-            // } else {
-            //     error = -error;
-            //     OCR1A -= k_p * error;
-            //     OCR1B += k_p * error;
-            // }
-
 
         }
     }
@@ -190,11 +191,52 @@ void turn_right(int8_t n) {
     kill_motors();
 }
 
-// Returns true if there is currently a wall in the specified direction with
-// respect to the robot.
-bool has_wall(side_t side) {
-    return (norm(side) >= 0.4);
+// ADC ISR
+ISR (ADC_vect) {
+    static bool first = true;
+    if (first) {
+        first = false;
+    } else {
+        if ((((ADMUX & 0x0F) == 0) || ((ADMUX & 0xF) == 1)) &&
+            (ADC > CURRENT_THRESHOLD)) {
+            kill_motors(); // should signal motor failure, too
+        } else if ((ADMUX & 0x0F) == 4) {
+            sensor[FRONT] = ADC;
+            if (sensor[FRONT] > sensor_max[FRONT])
+                sensor_max[FRONT] = sensor[FRONT];
+        } else if ((ADMUX & 0x0F) == 7) {
+            sensor[RIGHT] = ADC;
+            if (sensor[RIGHT] > sensor_max[RIGHT])
+                sensor_max[RIGHT] = sensor[RIGHT];
+        } else if ((ADMUX & 0x0F) == 6) {
+            sensor[LEFT] = ADC;
+            if (sensor[LEFT] > sensor_max[LEFT])
+                sensor_max[LEFT] = sensor[LEFT];
+        } else {
+            // should signal failure
+        }
+
+        uint8_t X = 0;
+        uint8_t next_sensor[] = {1, 4, X, X, 6, X, 7, 0};
+        ADMUX = (ADMUX & 0xF0) | next_sensor[ADMUX & 0x0F];
+        first = true;
+    }
+
+    if (has_wall(RIGHT)) {
+        PORTC |= _BV(PORTC3);
+    } else {
+        PORTC &= ~(_BV(PORTC3));
+    }
+
+    if (has_wall(LEFT)) {
+        PORTC |= _BV(PORTC2);
+    } else {
+        PORTC &= ~(_BV(PORTC2));
+    }
+
+	ADCSRA |= _BV(ADSC); // start another conversion
 }
+
 
 int main(void) {
     enc_init();
@@ -215,20 +257,12 @@ int main(void) {
     //uint8_t buff = 0;
 
     DDRC &= ~(_BV(DDC5));
-    while ((PINC & _BV(PINC5)));
-    while (!(PINC & _BV(PINC5)));
-    while ((PINC & _BV(PINC5))) {
-        move_forward(1);
-
-        if (has_wall(RIGHT)) {
-            PORTC |= _BV(PORTC3);
-        } else {
-            PORTC &= ~(_BV(PORTC3));
-        }
-        if (has_wall(LEFT)) {
-            PORTC |= _BV(PORTC2);
-        } else {
-            PORTC &= ~(_BV(PORTC2));
+    while (1) {
+        while (front_clear());
+        while (!front_clear());
+        while (front_clear()) {
+            move_forward(1);
         }
     }
+
 }
