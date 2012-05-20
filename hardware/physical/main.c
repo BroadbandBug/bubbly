@@ -128,16 +128,20 @@ void move_forward(int8_t n) {
             }
 
             //          unused, LEFT, RIGHT
-            float thresh[] = {0, 348, 307};
-            float Kp[] = {0, 5, 5};
+            float set_point[] = {0, 593, 593};
+            //float set_point[] = { 0, 400, 400};
+            //float set_point[] = {0, 307, 307};
+            float Kp[] = {0, 1, 1};
             float Ki[] = {0, 0, 0};
+            //float Ki[] = {0, -5, -5};
+            //float Kd[] = {0, -10, -10};
             float Kd[] = {0, 0, 0};
             //Reset all PID variables
             //If there is a wall to the right or the left use analog PID
             if (current_wall != NONE) {
                 side_t cw = current_wall;
 
-                error = sensor[cw] - thresh[cw];
+                error = sensor[cw] - set_point[cw];
                 integral += error;
                 derivative = error - error_prev;
 
@@ -147,8 +151,10 @@ void move_forward(int8_t n) {
                 if (current_wall == LEFT) {
                     ///slow down left motor
                     motor_speed(512 + output, 512 - output);
+            //        motor_speed(512 - output, 512 + output);
                 } else {
                     //slow down right motor
+                   // motor_speed(512 + output, 512 - output);
                     motor_speed(512 - output, 512 + output);
                 }
             } else {
@@ -257,12 +263,12 @@ int main(void) {
     //uint8_t buff = 0;
 
     DDRC &= ~(_BV(DDC5));
-    while (1) {
+    //while (1) {
         while (front_clear());
         while (!front_clear());
         while (front_clear()) {
             move_forward(1);
         }
-    }
+    //}
 
 }
